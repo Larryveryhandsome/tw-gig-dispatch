@@ -176,6 +176,39 @@ class AntiGamingTest(unittest.TestCase):
         self.assertEqual([(r["items"], r["amount"]) for r in d.payout("2026-05")], [(1, 20)])
 
 
+class DupPhoneRuleTest(unittest.TestCase):
+    def _run(self, rule, clock_days=(1, 1)):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        cur = {"d": datetime(2026, 5, clock_days[0], 10)}
+        d = make(tmp.name, f"{rule}.db", clock=lambda: cur["d"], dup_phone_rule=rule)
+        d.add_shop("連鎖一號店"); d.add_shop("連鎖二號店")
+        w = d.worker_by_code(d.add_worker("甲"))
+        d.auto_dispatch()
+        t = d.worker_tasks(w["id"])
+        a = d.record_visit(t[0]["assignment_id"], w["id"], "interested", "總部", "02-2345-6789")["commission"]
+        cur["d"] = datetime(2026, 5, clock_days[1], 10)
+        b = d.record_visit(t[1]["assignment_id"], w["id"], "interested", "總部", "02-2345-6789")["commission"]
+        return a, b
+
+    def test_default_is_same_day(self):
+        self.assertEqual(Rules().dup_phone_rule, "same_day")
+
+    def test_same_day_rule(self):
+        self.assertEqual(self._run("same_day", (1, 1)), (20, 0))   # 同一天重複：不計
+        self.assertEqual(self._run("same_day", (1, 2)), (20, 20))  # 隔天：連鎖店總機正常計
+
+    def test_off_rule(self):
+        self.assertEqual(self._run("off", (1, 1)), (20, 20))
+
+    def test_always_rule(self):
+        self.assertEqual(self._run("always", (1, 1)), (20, 0))
+        self.assertEqual(self._run("always", (1, 2)), (20, 0))
+
+    def test_rules_json_loads_rule(self):
+        self.assertEqual(Rules.load(ROOT / "rules.json").dup_phone_rule, "same_day")
+
+
 class AccessTest(unittest.TestCase):
     def setUp(self):
         try:

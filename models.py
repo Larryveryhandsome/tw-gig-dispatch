@@ -32,6 +32,7 @@ class Rules:
     close_bonus: int = 400         # 成交獎金：核實時填實收金額，達門檻才發
     min_close_amount: int = 1000   # 成交獎金門檻（實收金額）
     per_worker: int = 10           # 每人同時最多幾家待拜訪
+    dup_phone_rule: str = "same_day"  # 同一夥伴重複填同一支電話：off＝不檢查｜same_day＝同一天才不計（預設）｜always＝永遠只算第一筆
     notes: list = field(default_factory=list)  # 顯示給夥伴看的其他說明
 
     @classmethod
@@ -272,9 +273,12 @@ class Dispatch:
                                 " AND substr(created_at,1,10)=?", (worker_id, today)).fetchone()["n"]
             over_cap = n_today >= self.rules.daily_visit_cap
             # 同一位夥伴反覆填同一支電話衝量：第二筆起不計回報費（成交獎金仍由老闆核實時決定）
-            dup_phone = has_contact and bool(c.execute(
-                "SELECT 1 FROM visits WHERE worker_id=? AND contact_phone=? LIMIT 1",
-                (worker_id, contact_phone)).fetchone())
+            rule = self.rules.dup_phone_rule
+            dup_sql = {"always": "SELECT 1 FROM visits WHERE worker_id=? AND contact_phone=? LIMIT 1",
+                       "same_day": "SELECT 1 FROM visits WHERE worker_id=? AND contact_phone=?"
+                                   " AND substr(created_at,1,10)=? LIMIT 1"}.get(rule)
+            dup_phone = bool(has_contact and dup_sql and c.execute(
+                dup_sql, (worker_id, contact_phone) + ((today,) if rule == "same_day" else ())).fetchone())
             amount = self.rules.commission_for(result, has_contact and not dup_phone, over_cap)
             vid = c.execute("INSERT INTO visits (assignment_id, worker_id, shop_id, result, contact_name,"
                             " contact_phone, note, commission, created_at) VALUES (?,?,?,?,?,?,?,?,?)",
