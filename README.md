@@ -34,6 +34,19 @@
 
 ---
 
+## 需要哪些金鑰？
+
+**不需要任何外部服務的金鑰。** 只要自己設一組**管理密碼**（`.env` 的 `DISPATCH_ADMIN_TOKEN`，至少 8 個字，建議 12 字以上英數混合）。
+不知道怎麼想，可以讓電腦幫你產生一組：
+
+```bash
+python -c "import secrets; print(secrets.token_urlsafe(12))"
+```
+
+把印出來的那串貼到 `.env`，管理頁 `/admin` 用它登入。密碼不要給夥伴；外流就改一組新的並重新啟動。
+
+---
+
 ## 怎麼用
 
 **需要：** Python 3.10 以上（[python.org](https://www.python.org/downloads/)，Windows 安裝時勾選「Add python.exe to PATH」）。
