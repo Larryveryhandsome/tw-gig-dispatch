@@ -205,6 +205,26 @@ class DupPhoneRuleTest(unittest.TestCase):
         self.assertEqual(self._run("always", (1, 1)), (20, 0))
         self.assertEqual(self._run("always", (1, 2)), (20, 0))
 
+    def test_invalid_rule_warns_and_falls_back_to_default(self):
+        import contextlib
+        import json
+        for bad in ("sameday", "", "OFF", None, 5):
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                r = Rules(dup_phone_rule=bad)
+            self.assertEqual(r.dup_phone_rule, "same_day", bad)
+            self.assertIn("dup_phone_rule", out.getvalue())
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        f = Path(tmp.name) / "rules.json"
+        f.write_text(json.dumps({"dup_phone_rule": "sameday"}), encoding="utf-8")
+        with contextlib.redirect_stdout(io.StringIO()):
+            r = Rules.load(f)
+        self.assertEqual(r.dup_phone_rule, "same_day")
+        # 退回預設後，同一天同電話仍然被擋（防灌水沒失效）
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(self._run("sameday", (1, 1)), (20, 0))
+
     def test_rules_json_loads_rule(self):
         self.assertEqual(Rules.load(ROOT / "rules.json").dup_phone_rule, "same_day")
 

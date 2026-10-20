@@ -35,6 +35,13 @@ class Rules:
     dup_phone_rule: str = "same_day"  # 同一夥伴重複填同一支電話：off＝不檢查｜same_day＝同一天才不計（預設）｜always＝永遠只算第一筆
     notes: list = field(default_factory=list)  # 顯示給夥伴看的其他說明
 
+    def __post_init__(self):
+        # 填錯值（例如打成 sameday）不能默默變成「不檢查」讓防灌水失效：警告並退回預設 same_day
+        if self.dup_phone_rule not in ("off", "same_day", "always"):
+            print(f"[警告] rules.json 的 dup_phone_rule 值「{self.dup_phone_rule}」不合法，"
+                  f"只能是 off / same_day / always；已改用預設 same_day。", flush=True)
+            self.dup_phone_rule = "same_day"
+
     @classmethod
     def load(cls, path: Path):
         if not Path(path).exists():
