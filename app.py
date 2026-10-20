@@ -6,15 +6,16 @@ import csv
 import hmac
 import io
 import os
+import re
 import secrets
 import sys
 import time
-from datetime import date
+from datetime import datetime
 from pathlib import Path
 
 from flask import Flask, Response, abort, redirect, render_template_string, request, session, url_for
 
-from models import BASE_DIR, STATUSES, Dispatch, Rules
+from models import BASE_DIR, MAX_AMOUNT, STATUSES, TAIPEI, Dispatch, Rules, _int
 
 
 def load_dotenv(path=BASE_DIR / ".env"):
@@ -61,17 +62,64 @@ def page(body_tpl, **ctx):
     return render_template_string(tpl, **ctx)
 
 
-def create_app(dispatch: Dispatch, admin_token: str, brand: str = "示範派工", secret_key: str = None):
+def this_month() -> str:
+    return datetime.now(TAIPEI).strftime("%Y-%m")
+
+
+def create_app(dispatch: Dispatch, admin_token: str, brand: str = "示範派工", secret_key: str = None,
+               trust_proxy_ip: bool = False):
     if not admin_token or len(admin_token) < 8:
         raise ValueError("管理密碼 DISPATCH_ADMIN_TOKEN 至少 8 個字")
     app = Flask(__name__)
     app.secret_key = secret_key or secrets.token_hex(32)
     app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
+    app.config["SESSION_COOKIE_SECURE"] = os.getenv("DISPATCH_COOKIE_SECURE") == "1"  # 走 https 通道時在 .env 設 1
+    app.config["MAX_CONTENT_LENGTH"] = 5 * 1024 * 1024  # 匯入名單 CSV 最大 5MB
     fails = {}  # 登入失敗紀錄：{來源: [時間戳…]}。同一來源 5 分鐘內錯 8 次就暫時鎖住，防暴力猜密碼
-    MAX_FAILS, WINDOW = 8, 300
+    code_fails = {}  # 夥伴代碼猜錯紀錄：同一來源 5 分鐘內錯 20 次就暫時鎖住
+    MAX_FAILS, WINDOW, MAX_CODE_FAILS = 8, 300, 20
 
     def client_id():
-        return request.headers.get("CF-Connecting-IP") or request.remote_addr or "?"
+        # 只有明確告知「前面有 cloudflared／反向代理」才信任它帶的來源 IP；否則任何人都能偽造標頭繞過鎖定
+        if trust_proxy_ip:
+            return request.headers.get("CF-Connecting-IP") or request.headers.get("X-Forwarded-For", "").split(",")[0].strip() \
+                or request.remote_addr or "?"
+        return request.remote_addr or "?"
+
+    def throttled(book, limit, who=None):
+        who, now = who or client_id(), time.time()
+        if len(book) > 5000:  # 不讓紀錄無限長大
+            for k in [k for k, v in book.items() if not v or now - v[-1] > WINDOW]:
+                book.pop(k, None)
+        recent = [t for t in book.get(who, []) if now - t < WINDOW]
+        book[who] = recent
+        return len(recent) >= limit
+
+    def worker_or_404(code):
+        """代碼猜錯太多次的來源先擋下（代碼就是夥伴的通行證，不能讓人慢慢試）。"""
+        if throttled(code_fails, MAX_CODE_FAILS):
+            abort(429)
+        w = dispatch.worker_by_code(code)
+        if not w:
+            code_fails.setdefault(client_id(), []).append(time.time())
+        return w
+
+    @app.after_request
+    def secure_headers(resp):
+        resp.headers.setdefault("Cache-Control", "no-store")
+        resp.headers.setdefault("Referrer-Policy", "no-referrer")  # 網址裡有夥伴代碼，不要外流給別的網站
+        resp.headers.setdefault("X-Frame-Options", "DENY")
+        resp.headers.setdefault("X-Content-Type-Options", "nosniff")
+        return resp
+
+    @app.errorhandler(429)
+    def too_many(_e):
+        return page("""<h1>試太多次了</h1><div class="sub">請 5 分鐘後再試。</div>""", **ctx(title="請稍後")), 429
+
+    @app.errorhandler(413)
+    def too_big(_e):
+        return page("""<h1>檔案太大</h1><div class="sub">匯入檔最大 5MB，請分批匯入。</div><a class="btn" href="/admin/shops">回匯入頁</a>""",
+                    **ctx(title="檔案太大")), 413
 
     @app.errorhandler(404)
     def not_found(_e):
@@ -90,7 +138,8 @@ def create_app(dispatch: Dispatch, admin_token: str, brand: str = "示範派工"
             abort(redirect(url_for("admin_login")))
 
     def check_csrf():
-        if request.form.get("csrf") != session.get("csrf"):
+        tok = session.get("csrf") or ""
+        if not tok or not hmac.compare_digest(request.form.get("csrf", ""), tok):
             abort(400)
 
     # ── 夥伴端 ──────────────────────────────────────────────
@@ -103,7 +152,7 @@ def create_app(dispatch: Dispatch, admin_token: str, brand: str = "示範派工"
 
     @app.get("/go")
     def go():
-        w = dispatch.worker_by_code(request.args.get("code", ""))
+        w = worker_or_404(request.args.get("code", ""))
         if not w:
             return page("""<h1>找不到這個代碼</h1><div class="sub">確認一下有沒有打錯。</div><a class="btn" href="/">回上一頁</a>""",
                         **ctx(title="找不到代碼")), 404
@@ -111,7 +160,7 @@ def create_app(dispatch: Dispatch, admin_token: str, brand: str = "示範派工"
 
     @app.get("/w/<code>")
     def tasks(code):
-        w = dispatch.worker_by_code(code) or abort(404)
+        w = worker_or_404(code) or abort(404)
         rows = dispatch.worker_tasks(w["id"])
         return page("""<h1>嗨，{{ w.name }}</h1><div class="sub">代碼 {{ w.code }}{% if w.area %}　·　{{ w.area }}{% endif %}</div>
 <div class="stat"><div><b>{{ pending|length }}</b><span>待拜訪</span></div><div><b>{{ s.interested }}</b><span>有興趣</span></div>
@@ -133,7 +182,7 @@ def create_app(dispatch: Dispatch, admin_token: str, brand: str = "示範派工"
 
     @app.route("/w/<code>/report/<int:aid>", methods=["GET", "POST"])
     def report(code, aid):
-        w = dispatch.worker_by_code(code) or abort(404)
+        w = worker_or_404(code) or abort(404)
         a = dispatch.assignment(aid)
         if not a or a["worker_id"] != w["id"]:
             abort(404)
@@ -167,9 +216,7 @@ def create_app(dispatch: Dispatch, admin_token: str, brand: str = "示範派工"
         err = ""
         if request.method == "POST":
             who, now = client_id(), time.time()
-            recent = [t for t in fails.get(who, []) if now - t < WINDOW]
-            fails[who] = recent
-            if len(recent) >= MAX_FAILS:
+            if throttled(fails, MAX_FAILS, who):
                 err = "嘗試次數太多，請 5 分鐘後再試"
             elif hmac.compare_digest(request.form.get("token", ""), admin_token):
                 fails.pop(who, None)
@@ -177,7 +224,7 @@ def create_app(dispatch: Dispatch, admin_token: str, brand: str = "示範派工"
                 session["csrf"] = secrets.token_hex(16)
                 return redirect(url_for("admin"))
             else:
-                recent.append(now)
+                fails[who].append(now)
                 err = "密碼不對"
         return page("""<h1>管理登入</h1><div class="sub">{{ err }}</div><form method="post">
 <label>管理密碼<input name="token" type="password" required></label><button>登入</button></form>""", **ctx(title="管理登入", err=err))
@@ -197,7 +244,7 @@ def create_app(dispatch: Dispatch, admin_token: str, brand: str = "示範派工"
 <div><b>{{ unassigned }}</b><span>還沒派</span></div><div><b class="money">{{ d.unpaid }}</b><span>待核實金額</span></div></div>
 <form method="post" action="/admin/dispatch"><input type="hidden" name="csrf" value="{{ csrf }}">
 <label>每人同時最多幾家待拜訪<input name="per_worker" type="number" value="{{ R.per_worker }}" min="1" max="100"></label><button>自動派工</button></form>
-<h2>待核實（{{ pend|length }}）</h2>
+<h2>待核實（{{ pend_n }}{% if pend_n > pend|length %}，先顯示最新 {{ pend|length }} 筆，核實後再看下一批{% endif %}）</h2>
 {% if pend %}<div class="tbl"><table><tr><th>夥伴</th><th>店家</th><th>結果</th><th>聯絡人</th><th>金額</th><th></th></tr>
 {% for v in pend %}<tr><td>{{ v.worker_name }}</td><td>{{ v.shop_name }}</td><td>{{ STATUSES[v.result] }}</td><td>{{ v.contact_name }} {{ v.contact_phone }}</td>
 <td class="money">{{ v.commission }}</td><td><form method="post" action="/admin/verify/{{ v.id }}"><input type="hidden" name="csrf" value="{{ csrf }}">
@@ -208,21 +255,20 @@ def create_app(dispatch: Dispatch, admin_token: str, brand: str = "示範派工"
 <div class="row"><a class="btn ghost" href="/admin/workers">管理夥伴</a><a class="btn ghost" href="/admin/shops">匯入店家</a></div>
 <a class="btn ghost" href="/admin/payout.csv?month={{ month }}">下載 {{ month }} 獎金結算 CSV</a>
 <form method="post" action="/admin/logout"><button class="ghost">登出</button></form>""",
-                    **ctx(title="派工儀表板", d=dispatch.dashboard(), pend=dispatch.unverified(),
-                          unassigned=dispatch.unassigned_count(), csrf=session["csrf"], month=date.today().isoformat()[:7]))
+                    **ctx(title="派工儀表板", d=dispatch.dashboard(), pend=dispatch.unverified(), pend_n=dispatch.unverified_count(),
+                          unassigned=dispatch.unassigned_count(), csrf=session["csrf"], month=this_month()))
 
     @app.post("/admin/dispatch")
     def do_dispatch():
         need_admin(); check_csrf()
-        res = dispatch.auto_dispatch(int(request.form.get("per_worker") or R.per_worker))
+        res = dispatch.auto_dispatch(_int(request.form.get("per_worker"), R.per_worker, 1, 100) or R.per_worker)
         return page("""<h1>派工完成</h1><ul>{% for k, v in res.items() %}<li>{{ k }}：{{ v }} 家</li>{% else %}<li>沒有可派的店家</li>{% endfor %}</ul>
 <a class="btn" href="/admin">回儀表板</a>""", **ctx(title="派工完成", res=res))
 
     @app.post("/admin/verify/<int:vid>")
     def do_verify(vid):
         need_admin(); check_csrf()
-        raw = request.form.get("order_amount") or "0"
-        dispatch.verify_visit(vid, int(raw) if raw.isdigit() else 0)
+        dispatch.verify_visit(vid, _int(request.form.get("order_amount"), 0, 0, MAX_AMOUNT))
         return redirect(url_for("admin"))
 
     @app.route("/admin/workers", methods=["GET", "POST"])
@@ -232,15 +278,21 @@ def create_app(dispatch: Dispatch, admin_token: str, brand: str = "示範派工"
         if request.method == "POST":
             check_csrf()
             if request.form.get("toggle"):
-                dispatch.set_worker_active(int(request.form["toggle"]), request.form.get("active") == "1")
+                dispatch.set_worker_active(_int(request.form["toggle"]), request.form.get("active") == "1")
+            elif request.form.get("reset"):
+                new_code = dispatch.reset_worker_code(_int(request.form["reset"]))
+            elif request.form.get("set_area"):
+                dispatch.set_worker_area(_int(request.form["set_area"]), request.form.get("area", ""))
             elif request.form.get("name", "").strip():
                 new_code = dispatch.add_worker(request.form["name"].strip(), request.form.get("phone", "").strip(),
                                                request.form.get("area", "").strip())
-        return page("""<h1>管理夥伴</h1>{% if new_code %}<div class="card"><h3>已建立</h3><div class="meta">代碼 <b>{{ new_code }}</b>，私下發給他。</div></div>{% endif %}
+        return page("""<h1>管理夥伴</h1>{% if new_code %}<div class="card"><h3>已建立</h3><div class="meta">代碼 <b>{{ new_code }}</b>，私下發給他（換代碼的話，舊代碼已失效）。</div></div>{% endif %}
 <form method="post"><input type="hidden" name="csrf" value="{{ csrf }}"><label>姓名<input name="name" required></label>
 <label>負責區域（留空＝全區都可以派）<input name="area" placeholder="例如：北區、東區"></label><label>電話<input name="phone"></label><button>新增夥伴</button></form>
-<h2>名單</h2><div class="tbl"><table><tr><th>姓名</th><th>代碼</th><th>區域</th><th>狀態</th></tr>
-{% for w in ws %}<tr><td>{{ w.name }}</td><td><b>{{ w.code }}</b></td><td>{{ w.area or "全區" }}</td><td><form method="post">
+<h2>名單</h2><div class="tbl"><table><tr><th>姓名</th><th>代碼</th><th>區域（可改）</th><th>換代碼</th><th>狀態</th></tr>
+{% for w in ws %}<tr><td>{{ w.name }}</td><td><b>{{ w.code }}</b></td><td><form method="post"><input type="hidden" name="csrf" value="{{ csrf }}">
+<input type="hidden" name="set_area" value="{{ w.id }}"><input name="area" value="{{ w.area or '' }}" placeholder="全區" class="small"><button class="small ghost">存</button></form></td>
+<td><form method="post"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="reset" value="{{ w.id }}"><button class="small ghost">換新代碼</button></form></td><td><form method="post">
 <input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="toggle" value="{{ w.id }}"><input type="hidden" name="active" value="{{ 0 if w.active else 1 }}">
 <button class="small {{ '' if w.active else 'ghost' }}">{{ "啟用中（停用）" if w.active else "已停用（啟用）" }}</button></form></td></tr>{% endfor %}</table></div>
 <a class="btn ghost" href="/admin">回儀表板</a>""", **ctx(title="管理夥伴", ws=dispatch.list_workers(), new_code=new_code, csrf=session["csrf"]))
@@ -267,7 +319,9 @@ def create_app(dispatch: Dispatch, admin_token: str, brand: str = "示範派工"
     @app.get("/admin/payout.csv")
     def payout_csv():
         need_admin()
-        month = request.args.get("month", date.today().isoformat()[:7])[:7]
+        month = request.args.get("month", "") or this_month()
+        if not re.fullmatch(r"\d{4}-(0[1-9]|1[0-2])", month):
+            abort(400)
         buf = io.StringIO()
         wr = csv.writer(buf)
         wr.writerow(["月份", "代碼", "姓名", "電話", "筆數", "金額"])
@@ -302,7 +356,8 @@ def main():
         sys.exit(1)
     rules = Rules.load(BASE_DIR / "rules.json")
     app = create_app(Dispatch(data_dir / "dispatch.db", rules), token,
-                     os.getenv("DISPATCH_BRAND", "示範派工"), key_file.read_text(encoding="utf-8").strip())
+                     os.getenv("DISPATCH_BRAND", "示範派工"), key_file.read_text(encoding="utf-8").strip(),
+                     trust_proxy_ip=os.getenv("DISPATCH_TRUST_PROXY") == "1")
     host, port = os.getenv("DISPATCH_HOST", "127.0.0.1"), int(os.getenv("DISPATCH_PORT", "18801"))
     (data_dir / "dispatch.pid").write_text(str(os.getpid()), encoding="utf-8")
     print(f"派工系統啟動：夥伴入口 http://{host}:{port}/　管理 http://{host}:{port}/admin")

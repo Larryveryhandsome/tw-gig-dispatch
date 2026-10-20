@@ -90,8 +90,8 @@ class DispatchTest(unittest.TestCase):
         load_example(d)
         w = d.worker_by_code(d.add_worker("甲"))
         d.auto_dispatch()
-        amounts = [d.record_visit(t["assignment_id"], w["id"], "visited", "某", "0900-000-001")["commission"]
-                   for t in d.worker_tasks(w["id"])]
+        amounts = [d.record_visit(t["assignment_id"], w["id"], "visited", "某", f"0900-000-00{i}")["commission"]
+                   for i, t in enumerate(d.worker_tasks(w["id"]))]
         self.assertEqual(amounts, [20, 20, 0, 0, 0])
 
     def test_close_bonus_only_when_paid_enough(self):

@@ -62,7 +62,7 @@ python -c "import secrets; print(secrets.token_urlsafe(12))"
    - **Windows**：雙擊 **`背景啟動.vbs`**（背景執行，不跳黑色視窗；紀錄在 `data\dispatch.log`）。停止用 **`停止.vbs`**。
    - **macOS／Linux**：`python3 app.py`
 4. 打開 http://localhost:18801/admin ，用管理密碼登入。
-5. **管理夥伴** → 新增夥伴（可填負責區域，留空＝全區都能派）→ 把產生的 6 碼代碼私下發給他。
+5. **管理夥伴** → 新增夥伴（可填負責區域，留空＝全區都能派）→ 把產生的 10 碼代碼私下發給他（舊版的 6 碼代碼照常可用；代碼外流或換手機，按「換新代碼」舊的立刻失效）。
 6. **匯入店家** → 上傳 CSV（格式見 `shops.example.csv`，可以先用它試）。
 7. 回儀表板按 **自動派工**。
 8. 夥伴打開 http://你的網址:18801/ 輸入代碼 → 看任務 → 拜訪完按「回報結果」。
@@ -76,7 +76,9 @@ python -c "import secrets; print(secrets.token_urlsafe(12))"
 cloudflared tunnel --url http://localhost:18801
 ```
 
-把印出來的網址傳給夥伴即可。夥伴頁只靠 6 碼代碼辨識，**請別把代碼公開貼在群組**，有人離開就到「管理夥伴」把他停用。
+把印出來的網址傳給夥伴即可。夥伴頁只靠代碼辨識，**請別把代碼公開貼在群組**；有人離開就到「管理夥伴」把他停用（他還沒拜訪的店會退回待派）。同一個來源猜錯代碼 20 次會被暫時擋 5 分鐘。
+
+用 cloudflared／反向代理對外時，請在 `.env` 加 `DISPATCH_TRUST_PROXY=1`（讓登入鎖定與猜碼鎖定看到真正的來源 IP；**沒有代理時不要開**，否則標頭可被偽造）；走 https 時再加 `DISPATCH_COOKIE_SECURE=1`。
 
 ---
 
@@ -96,8 +98,8 @@ cloudflared tunnel --url http://localhost:18801
 
 | 設定 | 預設 | 說明 |
 |---|---|---|
-| `visit_fee` | 20 | 有效拜訪回報費（要有聯絡人姓名＋電話；「店家不存在」不計） |
-| `daily_visit_cap` | 15 | 每人每天最多幾筆算錢 |
+| `visit_fee` | 20 | 有效拜訪回報費（要有聯絡人姓名＋像樣的電話〔7 碼以上數字〕或 LINE ID；同一位夥伴重複填同一支電話，第二筆起不計；「店家不存在」不計） |
+| `daily_visit_cap` | 15 | 每人每天最多幾筆算錢（以台灣時間 UTC+8 的日期計） |
 | `close_bonus` | 400 | 成交獎金，管理員核實時填的實收金額達門檻才加發 |
 | `min_close_amount` | 1000 | 成交獎金門檻 |
 | `per_worker` | 10 | 每人同時最多幾家待拜訪 |
