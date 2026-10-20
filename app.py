@@ -25,7 +25,7 @@ def load_dotenv(path=BASE_DIR / ".env"):
                 os.environ.setdefault(k.strip(), v.strip())
 
 
-CSS = """*{box-sizing:border-box}body{font-family:-apple-system,"Noto Sans TC","Microsoft JhengHei",sans-serif;
+CSS = """*{box-sizing:border-box}body{font-family:-apple-system,BlinkMacSystemFont,"PingFang TC","Noto Sans TC","Microsoft JhengHei","Heiti TC",sans-serif;
 background:#F5F3EC;color:#222;line-height:1.6;padding:16px;max-width:680px;margin:0 auto}
 h1{font-size:1.35rem;margin:0 0 4px;color:#1F5F7A}h2{font-size:1.05rem;margin:20px 0 8px;color:#1F5F7A}
 .sub{color:#666;font-size:.85rem;margin-bottom:14px}.card{background:#fff;border-radius:12px;padding:14px;margin-bottom:10px;box-shadow:0 1px 3px rgba(0,0,0,.08)}
