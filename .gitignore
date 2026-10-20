@@ -1,0 +1,8 @@
+# 夥伴名單、店家名單、回報紀錄都在 data/，一律不進 git
+.env
+data/
+*.db
+*.log
+*.csv
+!shops.example.csv
+__pycache__/

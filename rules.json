@@ -1,0 +1,9 @@
+{
+  "_說明": "獎金規則。改完重新啟動即可生效。金額單位：元。",
+  "visit_fee": 20,
+  "daily_visit_cap": 15,
+  "close_bonus": 400,
+  "min_close_amount": 1000,
+  "per_worker": 10,
+  "notes": ["續訂、留存等其他獎勵請依你們的合作約定另外計算"]
+}
