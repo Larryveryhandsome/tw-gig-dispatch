@@ -6,3 +6,5 @@ data/
 *.csv
 !shops.example.csv
 __pycache__/
+.venv/
+venv/

@@ -8,6 +8,7 @@ import io
 import os
 import secrets
 import sys
+import time
 from datetime import date
 from pathlib import Path
 
@@ -49,6 +50,12 @@ BASE = """<!doctype html><html lang="zh-Hant"><head><meta charset="utf-8">
 <style>""" + CSS + """</style></head><body>{% block body %}{% endblock %}</body></html>"""
 
 
+def safe_cell(v):
+    """CSV 公式注入防護：Excel 會把 = + - @ 開頭的儲存格當公式執行，前面補一個單引號。"""
+    v = "" if v is None else str(v)
+    return "'" + v if v[:1] in ("=", "+", "-", "@", "\t", "\r") else v
+
+
 def page(body_tpl, **ctx):
     tpl = BASE.replace("{% block body %}{% endblock %}", body_tpl)
     return render_template_string(tpl, **ctx)
@@ -59,6 +66,17 @@ def create_app(dispatch: Dispatch, admin_token: str, brand: str = "示範派工"
         raise ValueError("管理密碼 DISPATCH_ADMIN_TOKEN 至少 8 個字")
     app = Flask(__name__)
     app.secret_key = secret_key or secrets.token_hex(32)
+    app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
+    fails = {}  # 登入失敗紀錄：{來源: [時間戳…]}。同一來源 5 分鐘內錯 8 次就暫時鎖住，防暴力猜密碼
+    MAX_FAILS, WINDOW = 8, 300
+
+    def client_id():
+        return request.headers.get("CF-Connecting-IP") or request.remote_addr or "?"
+
+    @app.errorhandler(404)
+    def not_found(_e):
+        return page("""<h1>找不到這個頁面</h1><div class="sub">網址可能打錯了，或這筆資料不存在。</div><a class="btn" href="/">回首頁</a>""",
+                    **ctx(title="找不到頁面")), 404
     R = dispatch.rules
 
     def ctx(**kw):
@@ -119,6 +137,8 @@ def create_app(dispatch: Dispatch, admin_token: str, brand: str = "示範派工"
         a = dispatch.assignment(aid)
         if not a or a["worker_id"] != w["id"]:
             abort(404)
+        if request.method == "GET" and a["status"] != "pending":
+            return redirect(url_for("tasks", code=w["code"]))  # 已經回報過的店不再顯示表單
         if request.method == "POST":
             f = request.form
             try:
@@ -146,11 +166,19 @@ def create_app(dispatch: Dispatch, admin_token: str, brand: str = "示範派工"
     def admin_login():
         err = ""
         if request.method == "POST":
-            if hmac.compare_digest(request.form.get("token", ""), admin_token):
+            who, now = client_id(), time.time()
+            recent = [t for t in fails.get(who, []) if now - t < WINDOW]
+            fails[who] = recent
+            if len(recent) >= MAX_FAILS:
+                err = "嘗試次數太多，請 5 分鐘後再試"
+            elif hmac.compare_digest(request.form.get("token", ""), admin_token):
+                fails.pop(who, None)
                 session["admin"] = True
                 session["csrf"] = secrets.token_hex(16)
                 return redirect(url_for("admin"))
-            err = "密碼不對"
+            else:
+                recent.append(now)
+                err = "密碼不對"
         return page("""<h1>管理登入</h1><div class="sub">{{ err }}</div><form method="post">
 <label>管理密碼<input name="token" type="password" required></label><button>登入</button></form>""", **ctx(title="管理登入", err=err))
 
@@ -244,7 +272,7 @@ def create_app(dispatch: Dispatch, admin_token: str, brand: str = "示範派工"
         wr = csv.writer(buf)
         wr.writerow(["月份", "代碼", "姓名", "電話", "筆數", "金額"])
         for r in dispatch.payout(month):
-            wr.writerow([month, r["code"], r["name"], r["phone"], r["items"], r["amount"]])
+            wr.writerow([month, r["code"], safe_cell(r["name"]), safe_cell(r["phone"]), r["items"], r["amount"]])
         return Response("﻿" + buf.getvalue(), mimetype="text/csv",
                         headers={"Content-Disposition": f"attachment; filename=payout_{month}.csv"})
 

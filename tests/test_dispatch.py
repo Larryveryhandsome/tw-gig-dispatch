@@ -174,6 +174,34 @@ class WebTest(unittest.TestCase):
         r = self.c.post("/admin/dispatch", data={"csrf": csrf, "per_worker": "5"})
         self.assertIn("新夥伴：1 家", r.get_data(as_text=True))
 
+    def test_login_throttle(self):
+        for _ in range(8):
+            self.assertIn("密碼不對", self.c.post("/admin/login", data={"token": "wrong"}).get_data(as_text=True))
+        r = self.c.post("/admin/login", data={"token": "testtoken123"})  # 就算密碼對也先鎖住
+        self.assertIn("嘗試次數太多", r.get_data(as_text=True))
+        self.assertEqual(self.c.get("/admin").status_code, 302)
+
+    def test_reported_task_redirects_and_404_is_chinese(self):
+        w = self.d.worker_by_code(self.code)
+        aid = self.d.worker_tasks(w["id"])[0]["assignment_id"]
+        self.assertEqual(self.c.get(f"/w/{self.code}/report/{aid}").status_code, 200)
+        self.c.post(f"/w/{self.code}/report/{aid}", data={"result": "visited"})
+        self.assertEqual(self.c.get(f"/w/{self.code}/report/{aid}").status_code, 302)
+        self.assertIn("找不到", self.c.get("/nope").get_data(as_text=True))
+
+    def test_payout_csv_neutralises_formulas(self):
+        evil = self.d.add_worker("=HYPERLINK(\"http://x\")", "+1", "特區")
+        self.d.add_shop("特店", area="特區")
+        w = self.d.worker_by_code(evil)
+        self.d.auto_dispatch()
+        aid = self.d.worker_tasks(w["id"])[0]["assignment_id"]
+        vid = self.d.record_visit(aid, w["id"], "interested", "陳", "0900-000-001")["visit_id"]
+        self.d.verify_visit(vid)
+        self.c.post("/admin/login", data={"token": "testtoken123"})
+        text = self.c.get("/admin/payout.csv?month=2026-05").get_data(as_text=True)
+        self.assertIn("'=HYPERLINK", text)
+        self.assertNotIn(",=HYPERLINK", text)
+
     def test_weak_token_rejected(self):
         import app as app_mod
         with self.assertRaises(ValueError):
