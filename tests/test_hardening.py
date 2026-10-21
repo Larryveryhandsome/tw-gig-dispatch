@@ -53,7 +53,7 @@ class ConcurrencyTest(unittest.TestCase):
         w = self.d.worker_by_code(self.d.add_worker("甲"))
         self.d.auto_dispatch()
         aid = self.d.worker_tasks(w["id"])[0]["assignment_id"]
-        out = self._run(12, lambda i: self.d.record_visit(aid, w["id"], "interested", "陳", "0900-123-456"))
+        out = self._run(12, lambda i: self.d.record_visit(aid, w["id"], "interested", "陳", "0900-000-456"))
         ok = [o for o in out if isinstance(o, dict)]
         self.assertEqual(len(ok), 1, out)
         self.assertTrue(all(isinstance(o, ValueError) for o in out if not isinstance(o, dict)), out)
@@ -66,7 +66,7 @@ class ConcurrencyTest(unittest.TestCase):
         w = self.d.worker_by_code(self.d.add_worker("甲"))
         self.d.auto_dispatch()
         aid = self.d.worker_tasks(w["id"])[0]["assignment_id"]
-        self.d.record_visit(aid, w["id"], "visited", "陳", "0900-123-456")
+        self.d.record_visit(aid, w["id"], "visited", "陳", "0900-000-456")
         with self.d.conn() as c, self.assertRaises(sqlite3.IntegrityError):
             c.execute("INSERT INTO visits (assignment_id, worker_id, shop_id, result, created_at)"
                       " VALUES (?,?,?,?,?)", (aid, w["id"], 1, "visited", "x"))
@@ -105,7 +105,7 @@ class ConcurrencyTest(unittest.TestCase):
         w = d.worker_by_code(d.add_worker("甲"))
         d.auto_dispatch()
         aid = d.worker_tasks(w["id"])[0]["assignment_id"]
-        vid = d.record_visit(aid, w["id"], "closed", "陳", "0900-123-456")["visit_id"]
+        vid = d.record_visit(aid, w["id"], "closed", "陳", "0900-000-456")["visit_id"]
         out = self._run(8, lambda i: d.verify_visit(vid, 5000))
         self.assertEqual([o for o in out if isinstance(o, Exception)], [])
         self.assertEqual(d.worker_summary(w["id"])["paid"], 20 + 400)
@@ -130,15 +130,15 @@ class AntiGamingTest(unittest.TestCase):
     def test_fake_phone_not_paid(self):
         self.assertEqual(self.rec(0, "陳", "123")["commission"], 0)
         self.assertEqual(self.rec(1, "陳", "沒有")["commission"], 0)
-        self.assertEqual(self.rec(2, "   ", "0912345678")["commission"], 0)
-        self.assertEqual(self.rec(3, "陳", "0912-345-678")["commission"], 20)
+        self.assertEqual(self.rec(2, "   ", "0900000678")["commission"], 0)
+        self.assertEqual(self.rec(3, "陳", "0900-000-678")["commission"], 20)
 
     def test_line_id_accepted(self):
         self.assertEqual(self.rec(0, "陳老闆", "line: chen88")["commission"], 20)
 
     def test_same_phone_reused_only_pays_once(self):
-        self.assertEqual(self.rec(0, "陳", "0912-345-678")["commission"], 20)
-        r = self.rec(1, "陳", "0912-345-678")
+        self.assertEqual(self.rec(0, "陳", "0900-000-678")["commission"], 20)
+        r = self.rec(1, "陳", "0900-000-678")
         self.assertEqual(r["commission"], 0)
         self.assertTrue(r["dup_phone"])
 
@@ -168,9 +168,9 @@ class AntiGamingTest(unittest.TestCase):
         w = d.worker_by_code(d.add_worker("乙"))
         d.auto_dispatch()
         t = d.worker_tasks(w["id"])
-        v1 = d.record_visit(t[0]["assignment_id"], w["id"], "visited", "陳", "0912-345-678")["visit_id"]
+        v1 = d.record_visit(t[0]["assignment_id"], w["id"], "visited", "陳", "0900-000-678")["visit_id"]
         clocks["t"] = datetime(2026, 5, 1, 0, 1, 0)
-        v2 = d.record_visit(t[1]["assignment_id"], w["id"], "visited", "王", "0922-345-678")["visit_id"]
+        v2 = d.record_visit(t[1]["assignment_id"], w["id"], "visited", "王", "0900-000-679")["visit_id"]
         d.verify_visit(v1); d.verify_visit(v2)
         self.assertEqual([(r["items"], r["amount"]) for r in d.payout("2026-04")], [(1, 20)])
         self.assertEqual([(r["items"], r["amount"]) for r in d.payout("2026-05")], [(1, 20)])
@@ -259,7 +259,7 @@ class AccessTest(unittest.TestCase):
         b_aid = self.d.worker_tasks(wb["id"])[0]["assignment_id"]
         # 甲用自己的代碼，改網址 id 想看／回報乙的店
         self.assertEqual(self.c.get(f"/w/{self.a}/report/{b_aid}").status_code, 404)
-        r = self.c.post(f"/w/{self.a}/report/{b_aid}", data={"result": "closed", "contact_name": "x", "contact_phone": "0912345678"})
+        r = self.c.post(f"/w/{self.a}/report/{b_aid}", data={"result": "closed", "contact_name": "x", "contact_phone": "0900000678"})
         self.assertEqual(r.status_code, 404)
         self.assertEqual(self.d.worker_summary(wb["id"])["visits"], 0)
         self.assertIn("嗨，甲", self.c.get(f"/w/{self.a}").get_data(as_text=True))
@@ -365,7 +365,7 @@ class ScaleTest(unittest.TestCase):
             raw.execute("DROP INDEX uq_visits_assignment")
             raw.executemany("INSERT INTO visits (assignment_id, worker_id, shop_id, result, contact_name, contact_phone,"
                             " commission, verified, created_at) VALUES (?,?,?,?,?,?,?,?,?)",
-                            [(100000 + i, 1 + i % 30, 1, "visited", "x", "0912345678", 20, i % 2,
+                            [(100000 + i, 1 + i % 30, 1, "visited", "x", "0900000678", 20, i % 2,
                               f"2026-{1 + i % 12:02d}-{1 + i % 28:02d}T10:00:00") for i in range(100_000)])
             raw.commit()
             raw.close()
