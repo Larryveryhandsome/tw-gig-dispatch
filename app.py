@@ -146,8 +146,8 @@ def create_app(dispatch: Dispatch, admin_token: str, brand: str = "示範派工"
     @app.get("/")
     def home():
         return page("""<h1>{{ brand }}</h1><div class="sub">夥伴任務系統</div>
-<form method="get" action="/go"><label>輸入你的夥伴代碼<input name="code" placeholder="例：A3F9C1" required autocapitalize="characters"></label>
-<button>看我的任務</button></form><div class="tip">代碼是管理員發給你的 6 碼英數字，請不要給別人。</div>""",
+<form method="get" action="/go"><label>輸入你的夥伴代碼<input name="code" placeholder="管理員發給你的代碼" required autocapitalize="characters"></label>
+<button>看我的任務</button></form><div class="tip">代碼是管理員發給你的英數字（通常 10 碼），請不要給別人。</div>""",
                     **ctx(title="夥伴入口"))
 
     @app.get("/go")
